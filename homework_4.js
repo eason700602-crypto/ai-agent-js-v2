@@ -5,7 +5,7 @@ import { ChatManager } from "./ChatManager.js";
 const chatManager = new ChatManager(OPENAI_API_KEY);
 
 console.log("=== Homework 3：天氣與時間工具 ===\n");
-console.log("請輸入問題，例如：");
+console.log("- 請輸入問題，例如：");
 console.log("- 台北現在天氣怎麼樣？");
 console.log("- 現在幾點了？");
 console.log("- 東京現在的天氣和台北相比如何？");
