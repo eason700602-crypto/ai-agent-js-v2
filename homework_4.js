@@ -1,10 +1,11 @@
 import { input } from "@inquirer/prompts";
 import { OPENAI_API_KEY } from "./config.js";
 import { ChatManager } from "./ChatManager.js";
+import { getCurrentTime, getWeather } from "./tools/index.js";
 
 const chatManager = new ChatManager(OPENAI_API_KEY);
 
-console.log("=== Homework 3：天氣與時間工具 ===\n");
+console.log("=== Homework 4：天氣與時間工具 ===\n");
 console.log("- 請輸入問題，例如：");
 console.log("- 台北現在天氣怎麼樣？");
 console.log("- 現在幾點了？");
@@ -21,7 +22,7 @@ while (true) {
   }
 
   try {
-    const answer = await chatManager.chat(question, "nightMarketExpert");
+    const answer = await chatManager.chat(question, "weatherAssistant");
     console.log(`\nAI 回應：\n${answer}\n`);
   } catch (error) {
     console.error("\n❌ 錯誤：", error.message);

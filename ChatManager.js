@@ -1,36 +1,5 @@
 import OpenAI from "openai";
-import { OPENWEATHER_API_KEY } from "./config.js";
-
-export function getCurrentTime() {
-  const now = new Date();
-  return now.toISOString().slice(0, 19).replace("T", " ");
-}
-
-export async function getWeather({ city }) {
-  const apiKey = OPENWEATHER_API_KEY;
-  if (!apiKey) {
-    throw new Error("OPENWEATHER_API_KEY 未設定，請在 .env 檔或環境變數中設定。");
-  }
-
-  const response = await fetch(
-    `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&units=metric&appid=${apiKey}&lang=zh_tw`
-  );
-
-  if (!response.ok) {
-    throw new Error(`無法取得 ${city} 的天氣資料`);
-  }
-
-  const data = await response.json();
-  return {
-    city: data.name,
-    country: data.sys?.country,
-    temperature: data.main?.temp,
-    feelsLike: data.main?.feels_like,
-    humidity: data.main?.humidity,
-    description: data.weather?.[0]?.description,
-    icon: data.weather?.[0]?.icon,
-  };
-}
+import { getCurrentTime, getWeather } from "./tools/index.js";
 
 function parseNumber(expr, index) {
   let start = index;
@@ -258,39 +227,46 @@ export class ChatManager {
       return finalContent;
     }
 
-    const toolCall = message.tool_calls[0];
-    if (toolCall.type !== "function") {
+    // 處理所有 tool calls
+    const toolResults = [];
+    
+    for (const toolCall of message.tool_calls) {
+      if (toolCall.type !== "function") {
+        continue;
+      }
+
+      const toolName = toolCall.function.name;
+      let toolResultPayload;
+
+      try {
+        const args = JSON.parse(toolCall.function.arguments || "{}");
+
+        if (toolName === "calculate") {
+          toolResultPayload = { result: calculate(args) };
+        } else if (toolName === "getCurrentTime") {
+          toolResultPayload = { result: getCurrentTime() };
+        } else if (toolName === "getWeather") {
+          toolResultPayload = { result: await getWeather(args) };
+        } else {
+          throw new Error(`Unknown tool: ${toolName}`);
+        }
+      } catch (error) {
+        toolResultPayload = { error: `工具執行失敗：${error.message}` };
+      }
+
+      toolResults.push({
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: JSON.stringify(toolResultPayload),
+      });
+    }
+
+    // 如果沒有成功的 tool 調用，直接返回
+    if (toolResults.length === 0) {
       const finalContent = message.content ?? "";
       this.conversationHistory.set(roleKey, [...history, userEntry, { role: "assistant", content: finalContent }]);
       return finalContent;
     }
-
-    const toolName = toolCall.function.name;
-    let toolResultPayload;
-
-    try {
-      const args = JSON.parse(toolCall.function.arguments || "{}");
-
-      if (toolName === "calculate") {
-        toolResultPayload = { result: calculate(args) };
-      } else if (toolName === "getCurrentTime") {
-        toolResultPayload = { result: getCurrentTime() };
-      } else if (toolName === "getWeather") {
-        toolResultPayload = { result: await getWeather(args) };
-      } else {
-        throw new Error(`Unknown tool: ${toolName}`);
-      }
-    } catch (error) {
-      const errorMessage = `工具執行失敗：${error.message}`;
-      this.conversationHistory.set(roleKey, [...history, userEntry, { role: "assistant", content: errorMessage }]);
-      return errorMessage;
-    }
-
-    const toolResult = {
-      role: "tool",
-      tool_call_id: toolCall.id,
-      content: JSON.stringify(toolResultPayload),
-    };
 
     const assistantToolCallMessage = {
       role: "assistant",
@@ -298,22 +274,25 @@ export class ChatManager {
       tool_calls: message.tool_calls,
     };
 
+    // 構建包含所有 tool results 的消息
+    const messagesForFollowUp = [...baseMessages, assistantToolCallMessage, ...toolResults];
+
     const followUpResponse = await this.client.chat.completions.create({
       model: "gpt-4-turbo",
       max_tokens: 1024,
-      messages: [...baseMessages, assistantToolCallMessage, toolResult],
+      messages: messagesForFollowUp,
       tools: this.tools,
       tool_choice: "auto",
     });
 
-    const finalContent =
-      followUpResponse.choices[0]?.message?.content ?? JSON.stringify(toolResultPayload, null, 2);
+    const finalContent = followUpResponse.choices[0]?.message?.content ?? "";
 
+    // 更新對話歷史，包含所有的 tool results
     this.conversationHistory.set(roleKey, [
       ...history,
       userEntry,
       assistantToolCallMessage,
-      toolResult,
+      ...toolResults,
       { role: "assistant", content: finalContent },
     ]);
 
