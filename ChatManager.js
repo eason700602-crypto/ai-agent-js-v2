@@ -1,130 +1,6 @@
 import OpenAI from "openai";
 import { getCurrentTime, getWeather } from "./tools/index.js";
-
-function parseNumber(expr, index) {
-  let start = index;
-
-  while (index < expr.length && /[0-9.]/.test(expr[index])) {
-    index += 1;
-  }
-
-  const numberText = expr.slice(start, index);
-  if (!numberText || numberText.split(".").length > 2) {
-    throw new Error("Unsafe expression: invalid number");
-  }
-
-  return { value: Number(numberText), index };
-}
-
-function parsePrimary(expr, index) {
-  while (index < expr.length && /\s/.test(expr[index])) {
-    index += 1;
-  }
-
-  const char = expr[index];
-
-  if (char === "(") {
-    const result = parseExpression(expr, index + 1);
-    if (expr[result.index] !== ")") {
-      throw new Error("Unsafe expression: missing closing parenthesis");
-    }
-    return { value: result.value, index: result.index + 1 };
-  }
-
-  if (char === "+" || char === "-") {
-    const sign = char === "-" ? -1 : 1;
-    const result = parsePrimary(expr, index + 1);
-    return { value: sign * result.value, index: result.index };
-  }
-
-  if (/[0-9]/.test(char)) {
-    return parseNumber(expr, index);
-  }
-
-  throw new Error("Unsafe expression: invalid token");
-}
-
-function parseTerm(expr, index) {
-  let result = parsePrimary(expr, index);
-
-  while (true) {
-    while (result.index < expr.length && /\s/.test(expr[result.index])) {
-      result.index += 1;
-    }
-
-    const operator = expr[result.index];
-    if (operator !== "*" && operator !== "/" && operator !== "%") {
-      return result;
-    }
-
-    const rhs = parsePrimary(expr, result.index + 1);
-    if (operator === "*") {
-      result.value *= rhs.value;
-    } else if (operator === "/") {
-      if (rhs.value === 0) {
-        throw new Error("Division by zero is not allowed");
-      }
-      result.value /= rhs.value;
-    } else {
-      if (rhs.value === 0) {
-        throw new Error("Modulo by zero is not allowed");
-      }
-      result.value %= rhs.value;
-    }
-
-    result.index = rhs.index;
-  }
-}
-
-function parseExpression(expr, index) {
-  let result = parseTerm(expr, index);
-
-  while (true) {
-    while (result.index < expr.length && /\s/.test(expr[result.index])) {
-      result.index += 1;
-    }
-
-    const operator = expr[result.index];
-    if (operator !== "+" && operator !== "-") {
-      return result;
-    }
-
-    const rhs = parseTerm(expr, result.index + 1);
-    if (operator === "+") {
-      result.value += rhs.value;
-    } else {
-      result.value -= rhs.value;
-    }
-    result.index = rhs.index;
-  }
-}
-
-export function calculate({ expression }) {
-  if (typeof expression !== "string") {
-    throw new Error("Unsafe expression: expression must be a string");
-  }
-
-  const trimmed = expression.trim();
-  if (!trimmed) {
-    throw new Error("Unsafe expression: empty input");
-  }
-
-  if (!/^[0-9+\-*/%().\s]+$/.test(trimmed)) {
-    throw new Error("Unsafe expression: only numbers and arithmetic operators are allowed");
-  }
-
-  const result = parseExpression(trimmed, 0);
-
-  while (result.index < trimmed.length && /\s/.test(trimmed[result.index])) {
-    result.index += 1;
-  }
-
-  if (result.index !== trimmed.length) {
-    throw new Error("Unsafe expression: unexpected token");
-  }
-
-  return Number(result.value.toFixed(10));
-}
+import { calculate } from "./tools/calculator.js";
 
 export class ChatManager {
   constructor(apiKey) {
@@ -135,6 +11,11 @@ export class ChatManager {
     this.client = new OpenAI({ apiKey });
     this.conversationHistory = new Map();
     this.roles = {
+      calculatorExpert: {
+        name: "計算機專家",
+        instructions:
+          "你是一位專業的數學計算助手。當使用者要求計算數學表達式時，優先使用 calculate 工具。計算完成後，清楚地說出計算過程和結果。在回答時，請說明你使用了 calculate 工具。請用繁體中文回答。",
+      },
       nightMarketExpert: {
         name: "台灣夜市小吃達人",
         instructions:
@@ -143,7 +24,7 @@ export class ChatManager {
       weatherAssistant: {
         name: "天氣助手",
         instructions:
-          "你是一位專業的天氣與時間助手。當使用者問現在時間或城市天氣時，優先使用 getCurrentTime 和 getWeather 工具。若同時問時間與天氣，請分別呼叫兩個工具後再整合回答。請用繁體中文，回答簡短且清楚。",
+          "你是一位專業的天氣與時間助手。當使用者問現在時間或城市天氣時，優先使用 getCurrentTime 和 getWeather 工具。若同時問時間與天氣，請分別呼叫兩個工具後再整合回答。在回答時，請說明你使用了哪些工具（getCurrentTime 或 getWeather）。請用繁體中文，回答簡短且清楚。",
       },
     };
     this.tools = [
@@ -274,8 +155,19 @@ export class ChatManager {
       tool_calls: message.tool_calls,
     };
 
-    // 構建包含所有 tool results 的消息
-    const messagesForFollowUp = [...baseMessages, assistantToolCallMessage, ...toolResults];
+    // 收集使用的工具名稱
+    const usedTools = message.tool_calls.map(tc => tc.function.name).join("、");
+
+    // 構建包含所有 tool results 的消息，並在系統消息中說明使用了哪些工具
+    const messagesForFollowUp = [
+      ...baseMessages,
+      {
+        role: "system",
+        content: `你已經使用了以下工具：${usedTools}。請在回答時明確說出你使用了哪個工具及其結果。`,
+      },
+      assistantToolCallMessage,
+      ...toolResults,
+    ];
 
     const followUpResponse = await this.client.chat.completions.create({
       model: "gpt-4-turbo",
